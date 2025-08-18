@@ -1,0 +1,128 @@
+# =========================
+# Android Project .gitignore (Complete)
+# =========================
+
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle-wrapper.jar
+.gradle/
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea/caches
+.idea/libraries
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+
+# Keystore (署名キーは絶対にコミット禁止)
+*.jks
+*.keystore
+*.pem
+*.p12
+
+# Log / Generated
+*.log
+*.hprof
+captures/
+output.json
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+
+# Kotlin / Java
+*.class
+*.jar
+*.war
+*.ear
+
+# Android build outputs
+app/release/
+app/debug/
+*.apk
+*.ap_
+*.aab
+*.idsig
+
+# NDK / CMake
+.obj/
+*.so
+*.o
+*.a
+.cxx/
+
+# Lint
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# Google Services (必要に応じてignore外す)
+google-services.json
+GoogleService-Info.plist
+
+# Crashlytics / Firebase
+fabric.properties
+crashlytics-build.properties
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Node.js (React Native連携時)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# =========================
+# AI Model Files (ignore)
+# =========================
+
+# Whisper / Llama / ONNX / TFLite models
+*.bin
+*.gguf
+*.onnx
+*.tflite
+*.pt
+*.pth
+*.safetensors
+
+# Tokenizer / Vocab
+*.json
+*.vocab
+*.model
+*.merges
+*.sentencepiece
+
+# Model cache / checkpoints
+models/
+model/
+checkpoints/
+pretrained/
+downloads/
+
+# HuggingFace cache
+.huggingface/
+transformers_cache/
+
+# =========================
+# Project-specific (例: JNI/NDK モジュール)
+# =========================
+nativelib/build/
+nativelib/obj/
+nativelib/.cxx/

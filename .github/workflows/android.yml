@@ -1,0 +1,128 @@
+name: Android CI & Dynamic Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest        # GitHub提供のUbuntuランナーを使用
+
+    steps:
+      # 1. ソースコードとサブモジュールをチェックアウト
+      - name: Checkout code (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 2. JDK 17をセットアップ（Javaビルドに必要）
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      # 3. Android NDKをセットアップ（JNIプロジェクト用）
+      - name: Set up Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          ndk-version: 25.2.9519653
+
+      # 4. Gradleのキャッシュ（ビルド時間短縮）
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}
+
+      # 5. gradlew に実行権限を付与
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      # 6. JNIソースの一覧を表示（デバッグ用）
+      - name: List JNI sources (debug)
+        run: ls -lR nativelib/ || true
+
+      # 7. リリースビルドを実行
+      - name: Build with Gradle (Release)
+        run: ./gradlew assembleRelease
+
+      # 8. ビルド成果物（APK）をアーティファクトとしてアップロード（ダウンロード可能に）
+      - name: Upload APK (Release) as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+      # 9. build.gradle から versionName を抽出
+      - name: Extract versionName from build.gradle
+        id: version
+        run: |
+          VERSION_NAME=$(grep versionName app/build.gradle | head -1 | sed 's/.*versionName[[:space:]]*"\(.*\)".*/\1/')
+          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      # 10. versionName＋日付でユニークなタグを生成
+      - name: Set tag name (version + datetime)
+        id: tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}-$(date '+%Y%m%d-%H%M')"
+          echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+
+      # 11. 既存の同名タグ・リリースがあれば削除（再ビルド対応）
+      - name: Delete Release and Tag (dynamic)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const tag = '${{ steps.tag.outputs.tag_name }}';
+            const releases = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const release = releases.data.find(r => r.tag_name === tag);
+            if (release) {
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+              });
+            }
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`,
+              });
+            } catch (e) {}
+
+      # 12. 直近10件のコミットメッセージを取得
+      - name: Get last 10 commits
+        id: get_commits
+        run: |
+          echo "notes<<EOF" >> $GITHUB_ENV
+          git log -10 --pretty="* %s (%an)" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      # 13. GitHubリリースページを作成（タグ付き、リリースノート付き）
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          release_name: Release ${{ steps.tag.outputs.tag_name }}
+          body: ${{ env.notes }}
+          draft: false
+          prerelease: false
+
+      # 14. リリースにAPKファイルを添付
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          files: app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}

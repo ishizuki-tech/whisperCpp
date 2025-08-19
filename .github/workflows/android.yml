@@ -65,6 +65,7 @@ jobs:
       - name: Debug repo & env (robust)
         shell: bash
         run: |
+          set -euo pipefail
           echo "=== PWD ==="; pwd || true
           echo "=== Runner ==="; whoami || true; uname -a || true
           echo "=== Git ==="; git --version || true
@@ -81,6 +82,7 @@ jobs:
         if: ${{ !hashFiles('gradle/wrapper/gradle-wrapper.jar') }}
         shell: bash
         run: |
+          set -euo pipefail
           echo "gradle-wrapper.jar missing — generating temporary wrapper."
           sudo apt-get update -y
           sudo apt-get install -y gradle
@@ -90,6 +92,7 @@ jobs:
       - name: Check gradle wrapper presence
         shell: bash
         run: |
+          set -euo pipefail
           [ -f "./gradlew" ] || { echo "gradlew missing"; exit 1; }
           [ -f "gradle/wrapper/gradle-wrapper.jar" ] || { echo "gradle-wrapper.jar missing"; exit 1; }
           echo "Gradle wrapper OK."
@@ -107,6 +110,7 @@ jobs:
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
         shell: bash
         run: |
+          set -euo pipefail
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > keystore.jks
           echo "ANDROID_KEYSTORE_FILE=$PWD/keystore.jks" >> $GITHUB_ENV
 
@@ -127,27 +131,27 @@ jobs:
           mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
           mapfile -t MAPs < <(find "${MODULE_PATH}/build/outputs" -type f -name "mapping.txt" | sort || true)
 
-          echo "apk_count=${#APKs[@]}" >> $GITHUB_OUTPUT
-          echo "aab_count=${#AABs[@]}" >> $GITHUB_OUTPUT
-          echo "map_count=${#MAPs[@]}" >> $GITHUB_OUTPUT
+          echo "apk_count=${#APKs[@]}" >> "$GITHUB_OUTPUT"
+          echo "aab_count=${#AABs[@]}" >> "$GITHUB_OUTPUT"
+          echo "map_count=${#MAPs[@]}" >> "$GITHUB_OUTPUT"
 
           {
             echo "apk_list<<EOF"
             printf "%s\n" "${APKs[@]}"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           {
             echo "aab_list<<EOF"
             printf "%s\n" "${AABs[@]}"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           {
             echo "map_list<<EOF"
             printf "%s\n" "${MAPs[@]}"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           echo "Found APKs:"; printf " - %s\n" "${APKs[@]}" || true
           echo "Found AABs:"; printf " - %s\n" "${AABs[@]}" || true
@@ -195,41 +199,42 @@ jobs:
               | sed -E 's/versionName="([^"]+)"/\1/' | head -n1 || true)
           fi
           [ -n "$VERSION" ] || VERSION="0.0.0"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected versionName: $VERSION"
 
       - name: Set tag name (version + datetime)
         id: tag
         shell: bash
         run: |
+          set -euo pipefail
           TAG="v${{ steps.version.outputs.version }}-$(date '+%Y%m%d-%H%M')"
-          echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           echo "Tag: $TAG"
 
       # ======== Compose Release body (English install guide, robust delimiter) ========
-  - name: Compose release body (notes + install guide)
-    id: release_body
-    shell: bash
-    run: |
-      set -euo pipefail
-      ROOT="${MODULE_PATH}/build/outputs"
-      mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
-      mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
-      
-      NOTES=$(git log -10 --pretty="* %s (%an)")
-      APK_EXAMPLE="your-release.apk"
-      AAB_EXAMPLE="your-release.aab"
-      if (( ${#APKs[@]} > 0 )); then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
-      if (( ${#AABs[@]} > 0 )); then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
-      
-      # Use a unique delimiter so it never collides
-      DELIM="EOF_$(date +%s)_$RANDOM"
-      
-      {
-        # >>> IMPORTANT: no quotes around the delimiter <<<
-        printf 'body<<%s\n' "$DELIM"
+      - name: Compose release body (notes + install guide)
+        id: release_body
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${MODULE_PATH}/build/outputs"
+          mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
+          mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
 
-  cat <<MD
+          NOTES=$(git log -10 --pretty="* %s (%an)")
+          APK_EXAMPLE="your-release.apk"
+          AAB_EXAMPLE="your-release.aab"
+          if (( ${#APKs[@]} > 0 )); then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
+          if (( ${#AABs[@]} > 0 )); then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
+
+          # Unique delimiter to avoid collisions with content
+          DELIM="EOF_$(date +%s)_$RANDOM"
+
+          # Start GitHub multiline output
+          echo "body<<$DELIM" >> "$GITHUB_OUTPUT"
+
+# Write the markdown body to GITHUB_OUTPUT (variables expand here)
+  cat <<MD >> "$GITHUB_OUTPUT"
   ## What's Changed
   ${NOTES}
   
@@ -285,71 +290,72 @@ An AAB cannot be installed directly. Use *bundletool* to build and install an \`
 
 ## Assets
   MD
-  for f in "${APKs[@]}"; do echo "- $(basename "$f")"; done
-  for f in "${AABs[@]}"; do echo "- $(basename "$f")"; done
   
-  # Close the GitHub Outputs multiline
-  printf '%s\n' "$DELIM"
-  } >> "$GITHUB_OUTPUT"
+  # Append assets list
+  for f in "${APKs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
+  for f in "${AABs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
+  
+  # Close GitHub multiline output
+  echo "$DELIM" >> "$GITHUB_OUTPUT"
 
-      - name: Create or update Release and upload assets
-        if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const tag = '${{ steps.tag.outputs.tag_name }}';
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            
-            function toList(multiline) {
-              return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
-            }
-            const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
-            const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
-            const body = `${{ steps.release_body.outputs.body }}`;
-            
-            core.info(`Target tag: ${tag}`);
-            core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
-            
-            let release;
-            try {
-              const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              release = getRes.data;
-              await github.rest.repos.updateRelease({
-                owner, repo, release_id: release.id, body, name: `Release ${tag}`, draft: false, prerelease: false
-              });
-            } catch (e) {
-              if (e.status === 404) {
-                const createRes = await github.rest.repos.createRelease({
-                  owner, repo, tag_name: tag, name: `Release ${tag}`, body, draft: false, prerelease: false
-                });
-                release = createRes.data;
-              } else {
-                throw e;
-              }
-            }
-            
-            const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
-            const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
-            async function upload(file) {
-              const name = path.basename(file);
-              if (existing.has(name)) {
-                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.get(name) });
-              }
-              const data = fs.readFileSync(file);
-              await github.rest.repos.uploadReleaseAsset({
-                owner, repo, release_id: release.id, name, data,
-                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
-              });
-              core.info(`Uploaded ${name}`);
-            }
-            for (const f of [...apks, ...aabs]) {
-              await upload(f);
-            }
+- name: Create or update Release and upload assets
+  if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}
+  uses: actions/github-script@v7
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    script: |
+      const fs = require('fs');
+      const path = require('path');
+      const tag = '${{ steps.tag.outputs.tag_name }}';
+      const owner = context.repo.owner;
+      const repo = context.repo.repo;
+      
+      function toList(multiline) {
+        return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
+      }
+      const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
+      const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
+      const body = `${{ steps.release_body.outputs.body }}`;
+      
+      core.info(`Target tag: ${tag}`);
+      core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
+      
+      let release;
+      try {
+        const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+        release = getRes.data;
+        await github.rest.repos.updateRelease({
+          owner, repo, release_id: release.id, body, name: `Release ${tag}`, draft: false, prerelease: false
+        });
+      } catch (e) {
+        if (e.status === 404) {
+          const createRes = await github.rest.repos.createRelease({
+            owner, repo, tag_name: tag, name: `Release ${tag}`, body, draft: false, prerelease: false
+          });
+          release = createRes.data;
+        } else {
+          throw e;
+        }
+      }
+      
+      const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
+      const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
+      async function upload(file) {
+        const name = path.basename(file);
+        if (existing.has(name)) {
+          await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.get(name) });
+        }
+        const data = fs.readFileSync(file);
+        await github.rest.repos.uploadReleaseAsset({
+          owner, repo, release_id: release.id, name, data,
+          headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
+        });
+        core.info(`Uploaded ${name}`);
+      }
+      for (const f of [...apks, ...aabs]) {
+        await upload(f);
+      }
 
-      - name: Skip release (no artifacts or disabled)
-        if: ${{ !inputs.create_release || (steps.collect.outputs.apk_count == '0' && steps.collect.outputs.aab_count == '0') }}
-        run: echo "Release step skipped."
+- name: Skip release (no artifacts or disabled)
+  if: ${{ !inputs.create_release || (steps.collect.outputs.apk_count == '0' && steps.collect.outputs.aab_count == '0') }}
+  run: echo "Release step skipped."

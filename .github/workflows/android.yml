@@ -207,85 +207,90 @@ jobs:
           echo "Tag: $TAG"
 
       # ======== Compose Release body (English install guide, robust delimiter) ========
-      - name: Compose release body (notes + install guide)
-        id: release_body
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT="${MODULE_PATH}/build/outputs"
-          mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
-          mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
+  - name: Compose release body (notes + install guide)
+    id: release_body
+    shell: bash
+    run: |
+      set -euo pipefail
+      ROOT="${MODULE_PATH}/build/outputs"
+      mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
+      mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
+      
+      NOTES=$(git log -10 --pretty="* %s (%an)")
+      APK_EXAMPLE="your-release.apk"
+      AAB_EXAMPLE="your-release.aab"
+      if (( ${#APKs[@]} > 0 )); then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
+      if (( ${#AABs[@]} > 0 )); then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
+      
+      # Use a unique delimiter so it never collides
+      DELIM="EOF_$(date +%s)_$RANDOM"
+      
+      {
+        # >>> IMPORTANT: no quotes around the delimiter <<<
+        printf 'body<<%s\n' "$DELIM"
 
-          NOTES=$(git log -10 --pretty="* %s (%an)")
-          APK_EXAMPLE="your-release.apk"
-          AAB_EXAMPLE="your-release.aab"
-          if (( ${#APKs[@]} > 0 )); then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
-          if (( ${#AABs[@]} > 0 )); then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
+  cat <<MD
+  ## What's Changed
+  ${NOTES}
+  
+  ## Install Guide
+  
+  ### 1) Install an APK via ADB
+  1. Enable *Developer options* and *USB debugging* on your device.
+2. Make sure the device is detected:
+  \`\`\`bash
+  adb devices -l
+  \`\`\`
+3. Install a single APK (universal or ABI-specific):
+    \`\`\`bash
+      adb install -r -g ${APK_EXAMPLE}
+      \`\`\`
+      - \`-r\` reinstalls if the app is already present; \`-g\` grants runtime permissions.
+      - Check device ABI with:
+      \`\`\`bash
+      adb shell getprop ro.product.cpu.abi
+      \`\`\`
+      (e.g., \`arm64-v8a\`).
 
-          DELIM="EOF_$(date +%s)_$RANDOM"
+  > **If you see ABI-split APKs**
+  > - \`*-arm64-v8a-release.apk\`: most modern phones (64-bit ARM)
+  > - \`*-x86_64-release.apk\`: emulators / some devices
+  > Prefer a **universal** APK if provided.
 
-          {
-            printf 'body<<%s\n' "$DELIM"
-            cat <<MD
-            ## What's Changed
-            ${NOTES}
-            
-            ## Install Guide
-            
-            ### 1) Install an APK via ADB
-            1. Enable *Developer options* and *USB debugging* on your device.
-            2. Make sure the device is detected:
-              \`\`\`bash
-              adb devices -l
-              \`\`\`
-            3. Install a single APK (universal or ABI-specific):
-                \`\`\`bash
-                  adb install -r -g ${APK_EXAMPLE}
-                  \`\`\`
-                  - \`-r\` reinstalls if the app is already present; \`-g\` grants runtime permissions.
-                  - Check device ABI with:
-                  \`\`\`bash
-                  adb shell getprop ro.product.cpu.abi
-                  \`\`\`
-                  (e.g., \`arm64-v8a\`).
-            
-              > **If you see ABI-split APKs**
-              > - \`*-arm64-v8a-release.apk\`: most modern phones (64-bit ARM)
-              > - \`*-x86_64-release.apk\`: emulators / some devices
-              > Prefer a **universal** APK if provided.
-            
-            ### 2) Install from an AAB using bundletool
-            An AAB cannot be installed directly. Use *bundletool* to build and install an \`.apks\` archive:
-              \`\`\`bash
-              # 1) Build a universal APK set
-              java -jar bundletool-all.jar build-apks \
-              --bundle ${AAB_EXAMPLE} \
-              --output app.apks \
-              --mode=universal
-              
-              # 2) Install to a connected device
-              java -jar bundletool-all.jar install-apks --apks app.apks
-              \`\`\`
-            - For ABI/DPI-optimized APKs, use \`--connected-device\` or \`--device-spec\`.
-            
-            ### 3) Troubleshooting
-            - If blocked by the OS, allow installing apps from unknown sources (device Settings).
-            - Remove a conflicting install:
-              \`\`\`bash
-              adb uninstall <your.applicationId>
-              \`\`\`
-            - Inspect install errors:
-              \`\`\`bash
-              adb logcat | grep -i -e package -e install
-              \`\`\`
-            - Ensure the APK matches your device architecture (ABI).
-            
-            ## Assets
-              MD
-              for f in "${APKs[@]}"; do echo "- $(basename "$f")"; done
-              for f in "${AABs[@]}"; do echo "- $(basename "$f")"; done
-              printf '%s\n' "$DELIM"
-              } >> "$GITHUB_OUTPUT"
+### 2) Install from an AAB using bundletool
+An AAB cannot be installed directly. Use *bundletool* to build and install an \`.apks\` archive:
+  \`\`\`bash
+  # 1) Build a universal APK set
+  java -jar bundletool-all.jar build-apks \
+  --bundle ${AAB_EXAMPLE} \
+  --output app.apks \
+  --mode=universal
+  
+  # 2) Install to a connected device
+  java -jar bundletool-all.jar install-apks --apks app.apks
+  \`\`\`
+- For ABI/DPI-optimized APKs, use \`--connected-device\` or \`--device-spec\`.
+
+### 3) Troubleshooting
+- If blocked by the OS, allow installing apps from unknown sources (device Settings).
+- Remove a conflicting install:
+  \`\`\`bash
+  adb uninstall <your.applicationId>
+  \`\`\`
+- Inspect install errors:
+  \`\`\`bash
+  adb logcat | grep -i -e package -e install
+  \`\`\`
+- Ensure the APK matches your device architecture (ABI).
+
+## Assets
+  MD
+  for f in "${APKs[@]}"; do echo "- $(basename "$f")"; done
+  for f in "${AABs[@]}"; do echo "- $(basename "$f")"; done
+  
+  # Close the GitHub Outputs multiline
+  printf '%s\n' "$DELIM"
+  } >> "$GITHUB_OUTPUT"
 
       - name: Create or update Release and upload assets
         if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}

@@ -258,9 +258,22 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         if (!canTranscribe) return
         canTranscribe = false
         try {
-            val data = withContext(Dispatchers.IO) { decodeWaveFile(file) }
+            val data = readAudioSamples(file)
+            val start = System.currentTimeMillis()
             val result = whisperContext?.transcribeData(data, selectedLanguage, translateToEnglish)
-            addResultLog("📝 $result", index)
+            val elapsedMs = System.currentTimeMillis() - start
+            val seconds = elapsedMs / 1000
+            val milliseconds = elapsedMs % 1000
+            val resultText = buildString {
+                appendLine("✅ Done. ")
+                appendLine("🕒 Finished in ${seconds}.${"%03d".format(milliseconds)}s")
+                appendLine("🎯 Model     : $selectedModel")
+                appendLine("🌐 Language  : $selectedLanguage")
+                appendLine("📝 Converted Text Result")
+                if (translateToEnglish) appendLine("🌐 Translate To Eng")
+                appendLine(result)
+            }
+            addResultLog(resultText, index)
         } catch (e: Exception) {
             Log.e(LOG_TAG, "Transcription error", e)
         } finally {
@@ -268,7 +281,42 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         }
     }
 
+    suspend fun readAudioSamples(file: File): FloatArray {
+        stopPlayback()
+        startPlayback(file)
+        return withContext(Dispatchers.IO) {
+            decodeWaveFile(file)
+        }
+    }
+
     // --- Playback helpers ---
+    /**
+     * Public helper: transcribe record at given index (used by double-tap).
+     * Checks bounds and file existence, adds a status log, and delegates to the suspend transcribeAudio.
+     */
+    fun transcribeRecording(index: Int) = viewModelScope.launch {
+        try {
+            if (index !in myRecords.indices) {
+                Log.w(LOG_TAG, "transcribeRecording: invalid index $index")
+                return@launch
+            }
+            val path = myRecords[index].absolutePath
+            val file = File(path)
+            if (!file.exists()) {
+                Log.w(LOG_TAG, "transcribeRecording: file not found $path")
+                addResultLog("⚠️ File not found: ${file.name}", index)
+                return@launch
+            }
+            // Optional: add an immediate "starting" log so user sees feedback
+            addResultLog("⏳ Re-transcribing...", index)
+
+            // call existing suspend function; it will append results to the record
+            transcribeAudio(file, index)
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "transcribeRecording failed", e)
+            addResultLog("⚠️ Transcription error: ${e.message}", index)
+        }
+    }
 
     /**
      * Start playback on the main thread.

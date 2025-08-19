@@ -29,7 +29,8 @@ fun MainScreenEntryPoint(viewModel: MainScreenViewModel) {
             selectedIndex = viewModel.myRecords.lastIndex
             viewModel.toggleRecord { selectedIndex = it }
         },
-        onCardClick = viewModel::playRecording
+        onCardClick = viewModel::playRecording,
+        onCardDoubleTap = viewModel::transcribeRecording
     )
 }
 

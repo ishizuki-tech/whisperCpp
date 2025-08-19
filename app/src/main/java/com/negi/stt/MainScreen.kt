@@ -82,7 +82,8 @@ fun MainScreen(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
     onRecordTapped: () -> Unit,
-    onCardClick: (String, Int) -> Unit
+    onCardClick: (String, Int) -> Unit,
+    onCardDoubleTap: (Int) -> Unit // <-- new
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var pendingDeleteIndex by remember { mutableStateOf(-1) }
@@ -107,6 +108,7 @@ fun MainScreen(
                 canTranscribe = canTranscribe,
                 onSelect = onSelect,
                 onCardClick = onCardClick,
+                onCardDoubleTap = onCardDoubleTap, // <-- pass through
                 onDeleteRequest = {
                     pendingDeleteIndex = it
                     showDeleteDialog = true
@@ -178,8 +180,13 @@ fun ConfigButtonWithDialog(viewModel: MainScreenViewModel) {
                     Text("Select model")
                     val models = listOf(
                         "ggml-tiny-q5_1.bin",
+                        "ggml-tiny-q8_0.bin",
                         "ggml-base-q5_1.bin",
-                        "ggml-small-q5_1.bin"
+                        "ggml-base-q8_0.bin",
+                        "ggml-small-q5_1.bin",
+                        "ggml-small-q8_0.bin",
+                        "ggml-medium-q5_0.bin",
+                        "ggml-medium-q8_0.bin"
                     )
                     DropdownSelector(
                         currentValue = viewModel.selectedModel,
@@ -367,6 +374,7 @@ private fun RecordingList(
     canTranscribe: Boolean,
     onSelect: (Int) -> Unit,
     onCardClick: (String, Int) -> Unit,
+    onCardDoubleTap: (Int) -> Unit,              // <-- new
     onDeleteRequest: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -412,17 +420,20 @@ private fun RecordingList(
                 ).value
             } else 1f
 
-            val tapModifier = if (canTranscribe) {
-                Modifier.pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { onSelect(index) },
-                        onDoubleTap = {
-                            onSelect(index)
-                            onCardClick(record.absolutePath, index)
-                        }
-                    )
-                }
-            } else Modifier
+            // Gesture modifier attached to the inner content to avoid conflicts with swipe-to-dismiss
+            val contentTapModifier = if (canTranscribe) {
+                Modifier
+                    .fillMaxWidth()
+                    .pointerInput(index) {
+                        detectTapGestures(
+                            onTap = { onSelect(index) }, // single tap selects
+                            onDoubleTap = {
+                                onSelect(index)
+                                onCardDoubleTap(index)    // <-- re-transcribe on double-tap
+                            }
+                        )
+                    }
+            } else Modifier.fillMaxWidth()
 
             SwipeToDismissBox(
                 state = swipeState,
@@ -441,8 +452,7 @@ private fun RecordingList(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .graphicsLayer(scaleX = scale, scaleY = scale)
-                        .then(tapModifier),
+                        .graphicsLayer(scaleX = scale, scaleY = scale),
                     shape = RoundedCornerShape(animatedCorner),
                     colors = CardDefaults.cardColors(
                         containerColor = when {
@@ -452,7 +462,10 @@ private fun RecordingList(
                         }
                     )
                 ) {
-                    Text(record.logs, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
+                    // apply gesture detector to the content area (not the SwipeToDismiss wrapper)
+                    Box(modifier = contentTapModifier.padding(16.dp)) {
+                        Text(record.logs, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
         }

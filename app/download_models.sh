@@ -1,7 +1,7 @@
 #!/bin/bash
 
 MODEL_DIR="src/main/assets/models"
-MODEL_NAMES=("ggml-base-q8_0.bin" "ggml-base-q5_1.bin" "ggml-tiny-q8_0.bin" "ggml-tiny-q5_1.bin")
+MODEL_NAMES=("ggml-small-q8_0.bin" "ggml-small-q5_1.bin" "ggml-base-q8_0.bin" "ggml-base-q5_1.bin" "ggml-tiny-q8_0.bin" "ggml-tiny-q5_1.bin" "ggml-medium-q5_0.bin" "ggml-medium-q8_0.bin")
 BASE_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
 mkdir -p "$MODEL_DIR"

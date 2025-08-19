@@ -19,7 +19,9 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.0.21"
 }
+
 
 //////////////////////////////////////////////////////
 // Optional signing: load keystore properties if present
@@ -206,6 +208,7 @@ dependencies {
     // Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.gson)
 
     // Lifecycle / ViewModel
     implementation(libs.androidx.lifecycle.runtime.ktx)

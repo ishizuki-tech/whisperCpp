@@ -368,7 +368,7 @@ private fun LanguageLabel(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RecordingList(
-    records: List<myRecord>,
+    records: List<MyRecord>,
     listState: LazyListState,
     selectedIndex: Int,
     canTranscribe: Boolean,

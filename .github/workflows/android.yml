@@ -222,6 +222,7 @@ jobs:
           if [ ${#APKs[@]} -gt 0 ]; then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
           if [ ${#AABs[@]} -gt 0 ]; then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
 
+          {
           echo "body<<'EOF'" >> $GITHUB_OUTPUT
           cat <<MD
           ## What's Changed
@@ -281,7 +282,8 @@ jobs:
           MD
           for f in "${APKs[@]}"; do echo "- $(basename "$f")"; done
           for f in "${AABs[@]}"; do echo "- $(basename "$f")"; done
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "EOF" 
+          } >> $GITHUB_OUTPUT
 
       - name: Create or update Release and upload assets
         if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}

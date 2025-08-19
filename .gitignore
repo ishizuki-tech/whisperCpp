@@ -1,13 +1,11 @@
 # =========================
-# Android Project .gitignore (Complete)
+# Android Project .gitignore (Cleaned)
 # =========================
 
-# Gradle
+# Gradle (build outputs and caches)
 .gradle/
 build/
 **/build/
-!gradle-wrapper.jar
-.gradle/
 local.properties
 
 # Android Studio / IntelliJ
@@ -22,7 +20,7 @@ local.properties
 .idea/navEditor.xml
 .idea/assetWizardSettings.xml
 
-# Keystore (署名キーは絶対にコミット禁止)
+# Keystore (絶対にコミットしない)
 *.jks
 *.keystore
 *.pem
@@ -43,7 +41,7 @@ Thumbs.db
 *.bak
 *.orig
 
-# Kotlin / Java
+# Kotlin / Java build artefacts
 *.class
 *.jar
 *.war
@@ -57,7 +55,7 @@ app/debug/
 *.aab
 *.idsig
 
-# NDK / CMake
+# NDK / CMake outputs
 .obj/
 *.so
 *.o
@@ -70,7 +68,7 @@ lint/generated/
 lint/outputs/
 lint/tmp/
 
-# Google Services (必要に応じてignore外す)
+# Google Services (必要ならプロジェクトで管理を外す)
 google-services.json
 GoogleService-Info.plist
 
@@ -84,16 +82,15 @@ fastlane/Preview.html
 fastlane/screenshots
 fastlane/test_output
 
-# Node.js (React Native連携時)
+# Node.js (React Native 等)
 node_modules/
 npm-debug.log
 yarn-error.log
 
 # =========================
-# AI Model Files (ignore)
+# AI model binaries & caches (ignore large model files)
 # =========================
-
-# Whisper / Llama / ONNX / TFLite models
+# Whisper / Llama / ONNX / TFLite / PyTorch etc.
 *.bin
 *.gguf
 *.onnx
@@ -102,21 +99,19 @@ yarn-error.log
 *.pth
 *.safetensors
 
-# Tokenizer / Vocab
+# Tokenizer / Vocab / Tokenizer caches
 *.json
 *.vocab
 *.model
 *.merges
 *.sentencepiece
 
-# Model cache / checkpoints
+# Model cache / checkpoints / downloads
 models/
 model/
 checkpoints/
 pretrained/
 downloads/
-
-# HuggingFace cache
 .huggingface/
 transformers_cache/
 
@@ -126,7 +121,17 @@ transformers_cache/
 nativelib/build/
 nativelib/obj/
 nativelib/.cxx/
-# Whisper.cpp Submodule build
 nativelib/whisper_core/build/
 nativelib/whisper_core/bin/
 nativelib/whisper_core/.cxx/
+
+# =========================
+# Exceptions: keep Gradle wrapper committed
+# Place exceptions AFTER generic *.jar rule so they take effect.
+# =========================
+# Allow top-level gradle-wrapper.jar (if present at repo root)
+!gradle-wrapper.jar
+
+# Allow gradle/wrapper directory and the wrapper jar inside it
+!gradle/wrapper/
+!gradle/wrapper/gradle-wrapper.jar

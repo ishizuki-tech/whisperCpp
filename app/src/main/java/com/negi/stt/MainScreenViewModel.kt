@@ -9,29 +9,32 @@ import android.icu.text.SimpleDateFormat
 import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresPermission
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-import java.util.*
+import java.io.IOException
+import java.util.Date
+import java.util.Locale
 
 private const val LOG_TAG = "MainScreenViewModel"
 
@@ -347,34 +350,111 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
     /**
      * Persist myRecords to records.json on disk (IO dispatcher).
      */
+    // --- Improved saveRecords: atomic write to tmp file then rename ---
     private fun saveRecords() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val file = File(application.filesDir, "records.json")
+                val tmp = File(application.filesDir, "records.json.tmp")
+
+                // write to tmp
                 val json = Json.encodeToString(myRecords)
-                file.writeText(json)
+                tmp.writeText(json)
+
+                // attempt atomic replace
+                if (tmp.renameTo(file).not()) {
+                    // fallback: try delete+rename
+                    file.delete()
+                    if (!tmp.renameTo(file)) {
+                        Log.e(LOG_TAG, "Failed to atomically replace records.json")
+                    }
+                }
+                Log.d(LOG_TAG, "Saved records.json (count=${myRecords.size})")
             } catch (e: Exception) {
                 Log.e(LOG_TAG, "Failed to save records", e)
             }
         }
     }
-
     /**
      * Load myRecords from records.json if present (IO dispatcher).
+     */
+    /**
+     * Improved loadRecords:
+     * - logs file existence and a short preview of contents
+     * - attempts normal deserialization
+     * - on failure, attempts simple fallback parsing from JSON structure
+     * - if fallback succeeds, rewrites file in canonical format (saveRecords)
      */
     private fun loadRecords() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val file = File(application.filesDir, "records.json")
-                if (file.exists()) {
-                    val text = file.readText()
-                    val loaded = Json.decodeFromString<List<myRecord>>(text)
+                if (!file.exists()) {
+                    Log.d(LOG_TAG, "records.json not found; nothing to load")
+                    return@launch
+                }
+
+                val text = file.readText()
+                Log.d(LOG_TAG, "records.json size=${text.length}")
+                // log preview (avoid huge logs)
+                val preview = if (text.length > 2000) text.substring(0, 2000) + "..." else text
+                Log.d(LOG_TAG, "records.json preview: $preview")
+
+                try {
+                    // primary path: expected canonical format
+                    val loaded: List<myRecord> = Json.decodeFromString(text)
                     withContext(Dispatchers.Main) {
                         myRecords = loaded
                     }
+                    Log.d(LOG_TAG, "Loaded ${loaded.size} records from records.json")
+                    return@launch
+                } catch (primaryEx: Exception) {
+                    Log.w(LOG_TAG, "Primary JSON decode failed, attempting fallback parsing", primaryEx)
                 }
+
+                // fallback: try to parse generically and extract fields
+                try {
+                    val element = Json.parseToJsonElement(text)
+                    val parsed = mutableListOf<myRecord>()
+
+                    if (element is JsonArray) {
+                        element.forEach { el ->
+                            if (el is JsonObject) {
+                                val logs = el["logs"]?.jsonPrimitive?.contentOrNull ?: ""
+                                val path = el["absolutePath"]?.jsonPrimitive?.contentOrNull ?: ""
+                                parsed.add(myRecord(logs = logs, absolutePath = path))
+                            }
+                        }
+                    } else if (element is JsonObject) {
+                        // maybe saved as { "records": [...] }
+                        val arr = element["records"]?.jsonArray
+                        arr?.forEach { el ->
+                            if (el is JsonObject) {
+                                val logs = el["logs"]?.jsonPrimitive?.contentOrNull ?: ""
+                                val path = el["absolutePath"]?.jsonPrimitive?.contentOrNull ?: ""
+                                parsed.add(myRecord(logs = logs, absolutePath = path))
+                            }
+                        }
+                    }
+
+                    if (parsed.isNotEmpty()) {
+                        // update state on main thread and rewrite file in canonical format
+                        withContext(Dispatchers.Main) { myRecords = parsed }
+                        Log.i(LOG_TAG, "Loaded ${parsed.size} records via fallback parsing. Rewriting file to canonical format.")
+                        saveRecords() // rewrite canonical JSON
+                        return@launch
+                    } else {
+                        Log.w(LOG_TAG, "Fallback parsing yielded no records")
+                    }
+                } catch (fallbackEx: Exception) {
+                    Log.e(LOG_TAG, "Fallback parsing failed", fallbackEx)
+                }
+
+                Log.e(LOG_TAG, "Unable to load records: unknown format or corrupted file.")
+            } catch (e: IOException) {
+                Log.e(LOG_TAG, "I/O error while loading records", e)
             } catch (e: Exception) {
-                Log.e(LOG_TAG, "Failed to load records", e)
+                Log.e(LOG_TAG, "Unexpected error while loading records", e)
             }
         }
     }

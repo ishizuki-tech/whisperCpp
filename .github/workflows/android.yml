@@ -305,17 +305,18 @@ jobs:
             const tag = '${{ steps.tag.outputs.tag_name }}';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-
+            
+            // ✅ toJSON で安全に埋め込む（改行・記号を正しくエスケープ）
             function toList(multiline) {
               return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
             }
-            const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
-            const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
-            const body = `${{ steps.release_body.outputs.body }}`;
-
+            const apks = toList(${{ toJSON(steps.collect.outputs.apk_list) }});
+            const aabs = toList(${{ toJSON(steps.collect.outputs.aab_list) }});
+            const body = ${{ toJSON(steps.release_body.outputs.body) }};
+            
             core.info(`Target tag: ${tag}`);
             core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
-
+            
             let release;
             try {
               const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
@@ -333,9 +334,10 @@ jobs:
                 throw e;
               }
             }
-
+            
             const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
             const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
+            
             async function upload(file) {
               const name = path.basename(file);
               if (existing.has(name)) {
@@ -348,6 +350,7 @@ jobs:
               });
               core.info(`Uploaded ${name}`);
             }
+            
             for (const f of [...apks, ...aabs]) {
               await upload(f);
             }

@@ -1,0 +1,3 @@
+[submodule "nativelib/whisper_core"]
+	path = nativelib/whisper_core
+	url = https://github.com/ggerganov/whisper.cpp.git

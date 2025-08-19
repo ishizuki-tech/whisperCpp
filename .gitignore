@@ -126,3 +126,7 @@ transformers_cache/
 nativelib/build/
 nativelib/obj/
 nativelib/.cxx/
+# Whisper.cpp Submodule build
+nativelib/whisper_core/build/
+nativelib/whisper_core/bin/
+nativelib/whisper_core/.cxx/

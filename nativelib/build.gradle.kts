@@ -5,17 +5,24 @@ plugins {
 
 android {
     namespace = "com.negi.nativelib"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        minSdk = 31
+        // targetSdk はライブラリでは不要（非推奨なので削除）
+        minSdk = 26  // Whisper.cpp の推奨最小SDK
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+
         externalNativeBuild {
             cmake {
-                cppFlags("")
+                cppFlags += listOf("-std=c++17")
             }
+        }
+
+        // 対応ABIを制限
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 
@@ -28,28 +35,32 @@ android {
             )
         }
     }
+
     externalNativeBuild {
         cmake {
-            path("src/main/cpp/CMakeLists.txt")
+            path("src/main/jni/whisper/CMakeLists.txt")
             version = "3.22.1"
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
+
+    // NDK / Build Tools のバージョン固定
     ndkVersion = "28.1.13356709"
     buildToolsVersion = "35.0.1"
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -2,132 +2,99 @@ name: Android CI & Dynamic Release
 
 on:
   workflow_dispatch:
+    inputs:
+      module:
+        description: "Android module path (e.g. app)"
+        required: false
+        default: "app"
+      create_release:
+        description: "Create GitHub Release and upload artifacts?"
+        required: false
+        type: boolean
+        default: true
+      ndk_version:
+        description: "Android NDK version"
+        required: false
+        default: "25.2.9519653"
 
 permissions:
-  contents: write   # release/tag の作成・削除に必要
+  contents: write
   packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    env:
+      MODULE_PATH: ${{ inputs.module || 'app' }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ORG_GRADLE_PROJECT_releaseStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ORG_GRADLE_PROJECT_releaseKeyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ORG_GRADLE_PROJECT_releaseKeyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
     steps:
       - name: Checkout code (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0   # タグ情報や履歴が必要な場合は 0 を推奨
+          fetch-depth: 0
+
+      - name: Validate Gradle Wrapper (security)
+        uses: gradle/wrapper-validation-action@v2
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: 17
 
-      - name: Set up Android NDK
+      - name: Set up Android SDK & NDK
         uses: android-actions/setup-android@v3
         with:
-          ndk-version: 25.2.9519653
+          ndk-version: ${{ inputs.ndk_version }}
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/gradle/wrapper/gradle-wrapper.jar') }}
-          restore-keys: |
-            gradle-${{ runner.os }}
+      - name: Setup Gradle (cache)
+        uses: gradle/actions/setup-gradle@v3
 
-      # Robust debugging to expose repo & env state (won't fail the job)
       - name: Debug repo & env (robust)
         shell: bash
         run: |
-          echo "=== PWD ==="
-          pwd || true
-
-          echo "=== Whoami / Runner info ==="
-          whoami || true
-          uname -a || true
-
-          echo "=== List repo root (short) ==="
-          ls -la || true
-
-          echo "=== Git info ==="
-          git --version || true
-          echo "Git rev-parse toplevel:"
+          echo "=== PWD ==="; pwd || true
+          echo "=== Runner ==="; whoami || true; uname -a || true
+          echo "=== Git ==="; git --version || true
           git rev-parse --show-toplevel 2>/dev/null || true
-          echo "Git branch / status (porcelain):"
           git status --porcelain --branch || true
-          echo "Recent commits:"
           git log -5 --pretty=format:'%h %s (%an)' || true
-
-          echo "=== Gradle / wrapper files ==="
-          echo "List gradle dir:"
-          ls -la gradle || true
-          echo "List gradle/wrapper dir:"
-          ls -la gradle/wrapper || true
-          echo "Check gradlew file:"
-          if [ -f "./gradlew" ]; then
-            ls -la ./gradlew || true
-            echo "Attempt to show first lines of gradlew:"
-            sed -n '1,20p' ./gradlew || true
-          else
-            echo "gradlew not found at repo root"
-          fi
-
-          echo "=== Check for wrapper jar tracked/ignored ==="
-          git ls-files --error-unmatch gradle/wrapper/gradle-wrapper.jar 2>/dev/null && echo "gradle-wrapper.jar is tracked" || echo "gradle-wrapper.jar is NOT tracked or not present"
-          git check-ignore -v gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo "git check-ignore returned nothing (not ignored or git not available)"
-
-          echo "=== Env vars of interest ==="
+          ls -la || true
+          sed -n '1,20p' ./gradlew || true
           echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
           echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
-          echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-<unset>}"
-          echo "RUNNER_OS=${RUNNER_OS:-<unset>}"
-
-          echo "=== Java / Gradle (if present) ==="
           java -version || true
-          if [ -x "./gradlew" ]; then
-            ./gradlew --version || true
-          else
-            echo "./gradlew not executable or not present"
-          fi
 
-          echo "=== End debug ==="
-
-      # If gradle wrapper jar is missing, generate a wrapper temporarily in CI (fallback)
-      - name: Ensure gradle wrapper present (generate fallback if missing)
+      - name: Ensure gradle wrapper present (fallback if missing)
+        if: ${{ !hashFiles('gradle/wrapper/gradle-wrapper.jar') }}
         shell: bash
         run: |
-          if [ -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "gradle-wrapper.jar already present"
-          else
-            echo "gradle-wrapper.jar missing — generating a temporary wrapper (CI fallback)"
-            sudo apt-get update -y
-            sudo apt-get install -y gradle
-            # Use a Gradle version compatible with AGP 8.10.x (recommended to commit wrapper later)
-            gradle wrapper --gradle-version 8.11.1
-            chmod +x ./gradlew || true
-          fi
+          echo "gradle-wrapper.jar missing — generating temporary wrapper."
+          sudo apt-get update -y
+          sudo apt-get install -y gradle
+          gradle wrapper --gradle-version 8.11.1
+          chmod +x ./gradlew
 
-      # --- sanity checks for the wrapper ---
       - name: Check gradle wrapper presence
         shell: bash
         run: |
-          echo "Checking gradlew and gradle wrapper..."
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew not found in repository root."
-            ls -la
-            exit 1
-          fi
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "ERROR: gradle/wrapper/gradle-wrapper.jar not found. Please commit the wrapper jar."
-            exit 1
-          fi
-          echo "Gradle wrapper files present."
+          [ -f "./gradlew" ] || { echo "gradlew missing"; exit 1; }
+          [ -f "gradle/wrapper/gradle-wrapper.jar" ] || { echo "gradle-wrapper.jar missing"; exit 1; }
+          echo "Gradle wrapper OK."
 
-      - name: Grant execute permission for gradlew (safe)
+      - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
       - name: Verify Gradle Wrapper
@@ -136,67 +103,100 @@ jobs:
       - name: List JNI sources (debug)
         run: ls -lR nativelib/ || true
 
-      # Build step (adjust working-directory if your android module is in a subfolder)
+      - name: Decode keystore from secret (optional)
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > keystore.jks
+          echo "ANDROID_KEYSTORE_FILE=$PWD/keystore.jks" >> $GITHUB_ENV
+
       - name: Build with Gradle (Release)
         id: gradle_build
         shell: bash
         run: |
-          set -e
-          ./gradlew assembleRelease --no-daemon
-        # working-directory: ./app   # <- もしプロジェクトがサブフォルダにあるときは有効化
+          set -euo pipefail
+          ./gradlew :${MODULE_PATH}:clean :${MODULE_PATH}:assembleRelease :${MODULE_PATH}:bundleRelease --no-daemon --stacktrace
 
-      - name: Ensure APK exists (set output)
-        id: apk_check
+      - name: Collect artifacts
+        id: collect
         shell: bash
         run: |
-          APK_PATH="app/build/outputs/apk/release/app-release.apk"
-          if [ -f "$APK_PATH" ]; then
-            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-            echo "apk_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "apk_exists=false" >> $GITHUB_OUTPUT
-            echo "Warning: APK was not found at $APK_PATH"
-          fi
+          set -euo pipefail
+          ROOT="${MODULE_PATH}/build/outputs"
+          mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
+          mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
+          mapfile -t MAPs < <(find "${MODULE_PATH}/build/outputs" -type f -name "mapping.txt" | sort || true)
 
-      - name: Upload APK (Release) as artifact (if exists)
-        if: ${{ steps.apk_check.outputs.apk_exists == 'true' }}
+          echo "apk_count=${#APKs[@]}" >> $GITHUB_OUTPUT
+          echo "aab_count=${#AABs[@]}" >> $GITHUB_OUTPUT
+          echo "map_count=${#MAPs[@]}" >> $GITHUB_OUTPUT
+
+          {
+            echo "apk_list<<EOF"
+            printf "%s\n" "${APKs[@]}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          {
+            echo "aab_list<<EOF"
+            printf "%s\n" "${AABs[@]}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          {
+            echo "map_list<<EOF"
+            printf "%s\n" "${MAPs[@]}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "Found APKs:"; printf " - %s\n" "${APKs[@]}" || true
+          echo "Found AABs:"; printf " - %s\n" "${AABs[@]}" || true
+          echo "Found mappings:"; printf " - %s\n" "${MAPs[@]}" || true
+
+      - name: Upload APKs
+        if: ${{ steps.collect.outputs.apk_count != '0' }}
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: ${{ steps.apk_check.outputs.apk_path }}
+          name: release-apks
+          path: |
+            ${{ steps.collect.outputs.apk_list }}
 
-      # Extract versionName from files
-      - name: Extract versionName from files
+      - name: Upload AABs
+        if: ${{ steps.collect.outputs.aab_count != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aabs
+          path: |
+            ${{ steps.collect.outputs.aab_list }}
+
+      - name: Upload ProGuard/R8 mappings
+        if: ${{ steps.collect.outputs.map_count != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: proguard-mappings
+          path: |
+            ${{ steps.collect.outputs.map_list }}
+
+      - name: Extract versionName
         id: version
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           VERSION=""
-          # Try build.gradle(.kts)
-          for FILE in app/build.gradle.kts app/build.gradle; do
+          for FILE in "${MODULE_PATH}/build.gradle.kts" "${MODULE_PATH}/build.gradle"; do
             if [ -f "$FILE" ]; then
-              VERSION=$(grep -Eo 'versionName[[:space:]]*[:=]?[[:space:]]*["'"'"'][^"'"'"']+["'"'"']' "$FILE" | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | head -n1 || true)
-              if [ -n "$VERSION" ]; then break; fi
+              CAND=$(grep -Eo 'versionName[[:space:]]*[:=]?[[:space:]]*["'"'"'][^"'"'"']+["'"'"']' "$FILE" \
+                | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | head -n1 || true)
+              if [ -n "$CAND" ]; then VERSION="$CAND"; break; fi
             fi
           done
-
-          # Fallback: AndroidManifest.xml
-          if [ -z "$VERSION" ] && [ -f "app/src/main/AndroidManifest.xml" ]; then
-            VERSION=$(grep -oP 'versionName="([^"]+)"' app/src/main/AndroidManifest.xml | sed -E 's/versionName="([^"]+)"/\1/' | head -n1 || true)
+          if [ -z "$VERSION" ] && [ -f "${MODULE_PATH}/src/main/AndroidManifest.xml" ]; then
+            VERSION=$(grep -oP 'versionName="([^"]+)"' "${MODULE_PATH}/src/main/AndroidManifest.xml" \
+              | sed -E 's/versionName="([^"]+)"/\1/' | head -n1 || true)
           fi
-
-          # Final fallback: try Gradle task (if project defines one)
-          if [ -z "$VERSION" ]; then
-            VERSION=$(./gradlew -q -PprintVersion=true printVersion 2>/dev/null || true)
-          fi
-
-          if [ -z "$VERSION" ]; then
-            echo "Could not determine versionName; defaulting to '0.0.0'"
-            VERSION="0.0.0"
-          fi
-
+          [ -n "$VERSION" ] || VERSION="0.0.0"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $VERSION"
+          echo "Detected versionName: $VERSION"
 
       - name: Set tag name (version + datetime)
         id: tag
@@ -204,93 +204,143 @@ jobs:
         run: |
           TAG="v${{ steps.version.outputs.version }}-$(date '+%Y%m%d-%H%M')"
           echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG"
 
-      - name: Get last 10 commits
-        id: get_commits
+      # ======== Compose Release body (English install guide) ========
+      - name: Compose release body (notes + install guide)
+        id: release_body
         shell: bash
         run: |
-          git log -10 --pretty="* %s (%an)" > commit_notes.txt
-          echo "notes<<EOF" >> $GITHUB_ENV
-          cat commit_notes.txt >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          set -euo pipefail
+          ROOT="${MODULE_PATH}/build/outputs"
+          mapfile -t APKs < <(find "$ROOT" -type f -name "*.apk" | sort)
+          mapfile -t AABs < <(find "$ROOT" -type f -name "*.aab" | sort)
 
-      # Create or reuse release and upload APK (handles existing tag/release gracefully)
-      - name: Create or update Release and upload APK (robust)
-        if: ${{ steps.apk_check.outputs.apk_exists == 'true' }}
+          NOTES=$(git log -10 --pretty="* %s (%an)")
+          APK_EXAMPLE="your-release.apk"
+          AAB_EXAMPLE="your-release.aab"
+          if [ ${#APKs[@]} -gt 0 ]; then APK_EXAMPLE="$(basename "${APKs[0]}")"; fi
+          if [ ${#AABs[@]} -gt 0 ]; then AAB_EXAMPLE="$(basename "${AABs[0]}")"; fi
+
+          echo "body<<'EOF'" >> $GITHUB_OUTPUT
+          cat <<MD
+          ## What's Changed
+          ${NOTES}
+
+          ## Install Guide
+
+          ### 1) Install an APK via ADB
+          1. Enable *Developer options* and *USB debugging* on your device.  
+          2. Make sure the device is detected:
+             \`\`\`bash
+             adb devices -l
+             \`\`\`
+          3. Install a single APK (universal or ABI-specific):
+             \`\`\`bash
+             adb install -r -g ${APK_EXAMPLE}
+             \`\`\`
+             - \`-r\` reinstalls if the app is already present; \`-g\` grants runtime permissions.
+             - Check device ABI with:
+               \`\`\`bash
+               adb shell getprop ro.product.cpu.abi
+               \`\`\` 
+               (e.g., \`arm64-v8a\`).
+
+          > **If you see ABI-split APKs**  
+          > - \`*-arm64-v8a-release.apk\`: most modern phones (64-bit ARM)  
+          > - \`*-x86_64-release.apk\`: emulators / some devices  
+          > Prefer a **universal** APK if provided.
+
+          ### 2) Install from an AAB using bundletool
+          An AAB cannot be installed directly. Use *bundletool* to build and install an \`.apks\` archive:
+          \`\`\`bash
+          # 1) Build a universal APK set
+          java -jar bundletool-all.jar build-apks \
+            --bundle ${AAB_EXAMPLE} \
+            --output app.apks \
+            --mode=universal
+
+          # 2) Install to a connected device
+          java -jar bundletool-all.jar install-apks --apks app.apks
+          \`\`\`
+          - For ABI/DPI-optimized APKs, use \`--connected-device\` or \`--device-spec\`.
+
+          ### 3) Troubleshooting
+          - If blocked by the OS, allow installing apps from unknown sources (device Settings).
+          - Remove a conflicting install:
+            \`\`\`bash
+            adb uninstall <your.applicationId>
+            \`\`\`
+          - Inspect install errors:
+            \`\`\`bash
+            adb logcat | grep -i -e package -e install
+            \`\`\`
+          - Ensure the APK matches your device architecture (ABI).
+
+          ## Assets
+          MD
+          for f in "${APKs[@]}"; do echo "- $(basename "$f")"; done
+          for f in "${AABs[@]}"; do echo "- $(basename "$f")"; done
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create or update Release and upload assets
+        if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const path = require('path');
-
             const tag = '${{ steps.tag.outputs.tag_name }}';
-            const filePath = '${{ steps.apk_check.outputs.apk_path }}';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            core.info(`Target tag: ${tag}`);
-            core.info(`APK path: ${filePath}`);
-
-            if (!fs.existsSync(filePath)) {
-              core.setFailed(`APK not found at ${filePath}`);
-              return;
+            function toList(multiline) {
+              return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
             }
+            const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
+            const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
+            const body = `${{ steps.release_body.outputs.body }}`;
 
-            // 1) try to get release by tag
+            core.info(`Target tag: ${tag}`);
+            core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
+
             let release;
             try {
               const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
               release = getRes.data;
-              core.info(`Found existing release id=${release.id} for tag ${tag}`);
+              await github.rest.repos.updateRelease({
+                owner, repo, release_id: release.id, body, name: `Release ${tag}`, draft: false, prerelease: false
+              });
             } catch (e) {
               if (e.status === 404) {
-                core.info(`No release for tag ${tag}; creating new release.`);
                 const createRes = await github.rest.repos.createRelease({
-                  owner, repo,
-                  tag_name: tag,
-                  name: `Release ${tag}`,
-                  body: process.env.notes || '',
-                  draft: false,
-                  prerelease: false
+                  owner, repo, tag_name: tag, name: `Release ${tag}`, body, draft: false, prerelease: false
                 });
                 release = createRes.data;
-                core.info(`Created release id=${release.id}`);
               } else {
                 throw e;
               }
             }
 
-            // 2) ensure there's no conflicting asset with same name
-            const fileName = path.basename(filePath);
-            const assetsRes = await github.rest.repos.listReleaseAssets({
-              owner, repo, release_id: release.id
-            });
-            const existing = assetsRes.data.find(a => a.name === fileName);
-            if (existing) {
-              core.info(`Deleting existing asset id=${existing.id} name=${existing.name}`);
-              await github.rest.repos.deleteReleaseAsset({
-                owner, repo, asset_id: existing.id
+            const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
+            const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
+            async function upload(file) {
+              const name = path.basename(file);
+              if (existing.has(name)) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.get(name) });
+              }
+              const data = fs.readFileSync(file);
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name, data,
+                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
               });
+              core.info(`Uploaded ${name}`);
+            }
+            for (const f of [...apks, ...aabs]) {
+              await upload(f);
             }
 
-            // 3) upload the apk
-            const fileData = fs.readFileSync(filePath);
-            await github.rest.repos.uploadReleaseAsset({
-              owner,
-              repo,
-              release_id: release.id,
-              name: fileName,
-              data: fileData,
-              headers: {
-                'content-type': 'application/vnd.android.package-archive',
-                'content-length': fileData.length
-              }
-            });
-            core.info(`Uploaded ${fileName} to release ${release.id}`);
-
-      # If APK missing, skip release creation but still finish job cleanly
-      - name: Skip release (APK missing)
-        if: ${{ steps.apk_check.outputs.apk_exists != 'true' }}
-        run: |
-          echo "APK not found; skipping release creation/upload."
+      - name: Skip release (no artifacts or disabled)
+        if: ${{ !inputs.create_release || (steps.collect.outputs.apk_count == '0' && steps.collect.outputs.aab_count == '0') }}
+        run: echo "Release step skipped."

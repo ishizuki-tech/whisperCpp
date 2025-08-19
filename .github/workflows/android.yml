@@ -39,8 +39,81 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}
 
+      # Robust debugging to expose repo & env state (won't fail the job)
+      - name: Debug repo & env (robust)
+        shell: bash
+        run: |
+          echo "=== PWD ==="
+          pwd || true
+
+          echo "=== Whoami / Runner info ==="
+          whoami || true
+          uname -a || true
+
+          echo "=== List repo root (short) ==="
+          ls -la || true
+
+          echo "=== Git info ==="
+          git --version || true
+          echo "Git rev-parse toplevel:"
+          git rev-parse --show-toplevel 2>/dev/null || true
+          echo "Git branch / status (porcelain):"
+          git status --porcelain --branch || true
+          echo "Recent commits:"
+          git log -5 --pretty=format:'%h %s (%an)' || true
+
+          echo "=== Gradle / wrapper files ==="
+          echo "List gradle dir:"
+          ls -la gradle || true
+          echo "List gradle/wrapper dir:"
+          ls -la gradle/wrapper || true
+          echo "Check gradlew file:"
+          if [ -f "./gradlew" ]; then
+            ls -la ./gradlew || true
+            echo "Attempt to show first lines of gradlew:"
+            sed -n '1,20p' ./gradlew || true
+          else
+            echo "gradlew not found at repo root"
+          fi
+
+          echo "=== Check for wrapper jar tracked/ignored ==="
+          git ls-files --error-unmatch gradle/wrapper/gradle-wrapper.jar 2>/dev/null && echo "gradle-wrapper.jar is tracked" || echo "gradle-wrapper.jar is NOT tracked or not present"
+          git check-ignore -v gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo "git check-ignore returned nothing (not ignored or git not available)"
+
+          echo "=== Env vars of interest ==="
+          echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-<unset>}"
+          echo "RUNNER_OS=${RUNNER_OS:-<unset>}"
+
+          echo "=== Java / Gradle (if present) ==="
+          java -version || true
+          if [ -x "./gradlew" ]; then
+            ./gradlew --version || true
+          else
+            echo "./gradlew not executable or not present"
+          fi
+
+          echo "=== End debug ==="
+
+      # If gradle wrapper jar is missing, generate a wrapper temporarily in CI (fallback)
+      - name: Ensure gradle wrapper present (generate fallback if missing)
+        shell: bash
+        run: |
+          if [ -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "gradle-wrapper.jar already present"
+          else
+            echo "gradle-wrapper.jar missing — generating a temporary wrapper (CI fallback)"
+            sudo apt-get update -y
+            sudo apt-get install -y gradle
+            # Use a Gradle version compatible with AGP 8.10.x (recommended to commit wrapper later)
+            gradle wrapper --gradle-version 8.11.1
+            chmod +x ./gradlew || true
+          fi
+
       # --- sanity checks for the wrapper ---
       - name: Check gradle wrapper presence
+        shell: bash
         run: |
           echo "Checking gradlew and gradle wrapper..."
           if [ ! -f "./gradlew" ]; then
@@ -63,9 +136,10 @@ jobs:
       - name: List JNI sources (debug)
         run: ls -lR nativelib/ || true
 
-      # If your Android module is not at repo root, add `working-directory: ./path/to/project` to the build step(s)
+      # Build step (adjust working-directory if your android module is in a subfolder)
       - name: Build with Gradle (Release)
         id: gradle_build
+        shell: bash
         run: |
           set -e
           ./gradlew assembleRelease --no-daemon
@@ -73,6 +147,7 @@ jobs:
 
       - name: Ensure APK exists (set output)
         id: apk_check
+        shell: bash
         run: |
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           if [ -f "$APK_PATH" ]; then
@@ -90,16 +165,16 @@ jobs:
           name: app-release-apk
           path: ${{ steps.apk_check.outputs.apk_path }}
 
-      # Extract version name robustly (build.gradle | build.gradle.kts | AndroidManifest.xml)
+      # Extract versionName from files
       - name: Extract versionName from files
         id: version
+        shell: bash
         run: |
           set -e
           VERSION=""
           # Try build.gradle(.kts)
           for FILE in app/build.gradle.kts app/build.gradle; do
             if [ -f "$FILE" ]; then
-              # match patterns like: versionName = "1.2.3"  OR  versionName "1.2.3"
               VERSION=$(grep -Eo 'versionName[[:space:]]*[:=]?[[:space:]]*["'"'"'][^"'"'"']+["'"'"']' "$FILE" | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | head -n1 || true)
               if [ -n "$VERSION" ]; then break; fi
             fi
@@ -125,63 +200,98 @@ jobs:
 
       - name: Set tag name (version + datetime)
         id: tag
+        shell: bash
         run: |
           TAG="v${{ steps.version.outputs.version }}-$(date '+%Y%m%d-%H%M')"
           echo "tag_name=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Delete Release and Tag (dynamic)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const tag = '${{ steps.tag.outputs.tag_name }}';
-            const releases = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-            const release = releases.data.find(r => r.tag_name === tag);
-            if (release) {
-              core.info(`Deleting existing release id=${release.id} tag=${tag}`);
-              await github.rest.repos.deleteRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: release.id,
-              });
-            }
-            try {
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/${tag}`,
-              });
-            } catch (e) {
-              core.info(`No existing tag ${tag} to delete or delete failed: ${e.message}`);
-            }
-
       - name: Get last 10 commits
         id: get_commits
+        shell: bash
         run: |
           git log -10 --pretty="* %s (%an)" > commit_notes.txt
           echo "notes<<EOF" >> $GITHUB_ENV
           cat commit_notes.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Create Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.tag.outputs.tag_name }}
-          release_name: Release ${{ steps.tag.outputs.tag_name }}
-          body: ${{ env.notes }}
-          draft: false
-          prerelease: false
-
-      - name: Upload APK to Release (if exists)
+      # Create or reuse release and upload APK (handles existing tag/release gracefully)
+      - name: Create or update Release and upload APK (robust)
         if: ${{ steps.apk_check.outputs.apk_exists == 'true' }}
-        uses: softprops/action-gh-release@v2
+        uses: actions/github-script@v7
         with:
-          tag_name: ${{ steps.tag.outputs.tag_name }}
-          files: ${{ steps.apk_check.outputs.apk_path }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const core = require('@actions/core');
+
+            const tag = '${{ steps.tag.outputs.tag_name }}';
+            const filePath = '${{ steps.apk_check.outputs.apk_path }}';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            core.info(`Target tag: ${tag}`);
+            core.info(`APK path: ${filePath}`);
+
+            if (!fs.existsSync(filePath)) {
+              core.setFailed(`APK not found at ${filePath}`);
+              return;
+            }
+
+            // 1) try to get release by tag
+            let release;
+            try {
+              const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              release = getRes.data;
+              core.info(`Found existing release id=${release.id} for tag ${tag}`);
+            } catch (e) {
+              if (e.status === 404) {
+                core.info(`No release for tag ${tag}; creating new release.`);
+                const createRes = await github.rest.repos.createRelease({
+                  owner, repo,
+                  tag_name: tag,
+                  name: `Release ${tag}`,
+                  body: process.env.notes || '',
+                  draft: false,
+                  prerelease: false
+                });
+                release = createRes.data;
+                core.info(`Created release id=${release.id}`);
+              } else {
+                throw e;
+              }
+            }
+
+            // 2) ensure there's no conflicting asset with same name
+            const fileName = path.basename(filePath);
+            const assetsRes = await github.rest.repos.listReleaseAssets({
+              owner, repo, release_id: release.id
+            });
+            const existing = assetsRes.data.find(a => a.name === fileName);
+            if (existing) {
+              core.info(`Deleting existing asset id=${existing.id} name=${existing.name}`);
+              await github.rest.repos.deleteReleaseAsset({
+                owner, repo, asset_id: existing.id
+              });
+            }
+
+            // 3) upload the apk
+            const fileData = fs.readFileSync(filePath);
+            await github.rest.repos.uploadReleaseAsset({
+              owner,
+              repo,
+              release_id: release.id,
+              name: fileName,
+              data: fileData,
+              headers: {
+                'content-type': 'application/vnd.android.package-archive',
+                'content-length': fileData.length
+              }
+            });
+            core.info(`Uploaded ${fileName} to release ${release.id}`);
+
+      # If APK missing, skip release creation but still finish job cleanly
+      - name: Skip release (APK missing)
+        if: ${{ steps.apk_check.outputs.apk_exists != 'true' }}
+        run: |
+          echo "APK not found; skipping release creation/upload."

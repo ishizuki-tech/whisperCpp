@@ -3,79 +3,136 @@ name: Android CI & Dynamic Release
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write   # release/tag の作成・削除に必要
+  packages: write
+
 jobs:
   build-and-release:
-    runs-on: ubuntu-latest        # GitHub提供のUbuntuランナーを使用
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. ソースコードとサブモジュールをチェックアウト
       - name: Checkout code (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0   # タグ情報や履歴が必要な場合は 0 を推奨
 
-      # 2. JDK 17をセットアップ（Javaビルドに必要）
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: 17
 
-      # 3. Android NDKをセットアップ（JNIプロジェクト用）
       - name: Set up Android NDK
         uses: android-actions/setup-android@v3
         with:
           ndk-version: 25.2.9519653
 
-      # 4. Gradleのキャッシュ（ビルド時間短縮）
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/gradle/wrapper/gradle-wrapper.jar') }}
           restore-keys: |
             gradle-${{ runner.os }}
 
-      # 5. gradlew に実行権限を付与
-      - name: Grant execute permission for gradlew
+      # --- sanity checks for the wrapper ---
+      - name: Check gradle wrapper presence
+        run: |
+          echo "Checking gradlew and gradle wrapper..."
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew not found in repository root."
+            ls -la
+            exit 1
+          fi
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "ERROR: gradle/wrapper/gradle-wrapper.jar not found. Please commit the wrapper jar."
+            exit 1
+          fi
+          echo "Gradle wrapper files present."
+
+      - name: Grant execute permission for gradlew (safe)
         run: chmod +x ./gradlew
 
-      # 6. JNIソースの一覧を表示（デバッグ用）
+      - name: Verify Gradle Wrapper
+        run: ./gradlew --version
+
       - name: List JNI sources (debug)
         run: ls -lR nativelib/ || true
 
-      # 7. リリースビルドを実行
+      # If your Android module is not at repo root, add `working-directory: ./path/to/project` to the build step(s)
       - name: Build with Gradle (Release)
-        run: ./gradlew assembleRelease
+        id: gradle_build
+        run: |
+          set -e
+          ./gradlew assembleRelease --no-daemon
+        # working-directory: ./app   # <- もしプロジェクトがサブフォルダにあるときは有効化
 
-      # 8. ビルド成果物（APK）をアーティファクトとしてアップロード（ダウンロード可能に）
-      - name: Upload APK (Release) as artifact
+      - name: Ensure APK exists (set output)
+        id: apk_check
+        run: |
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ -f "$APK_PATH" ]; then
+            echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+            echo "apk_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "apk_exists=false" >> $GITHUB_OUTPUT
+            echo "Warning: APK was not found at $APK_PATH"
+          fi
+
+      - name: Upload APK (Release) as artifact (if exists)
+        if: ${{ steps.apk_check.outputs.apk_exists == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          path: ${{ steps.apk_check.outputs.apk_path }}
 
-      # 9. build.gradle から versionName を抽出
-      - name: Extract versionName from build.gradle
+      # Extract version name robustly (build.gradle | build.gradle.kts | AndroidManifest.xml)
+      - name: Extract versionName from files
         id: version
         run: |
-          VERSION_NAME=$(grep versionName app/build.gradle | head -1 | sed 's/.*versionName[[:space:]]*"\(.*\)".*/\1/')
-          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+          set -e
+          VERSION=""
+          # Try build.gradle(.kts)
+          for FILE in app/build.gradle.kts app/build.gradle; do
+            if [ -f "$FILE" ]; then
+              # match patterns like: versionName = "1.2.3"  OR  versionName "1.2.3"
+              VERSION=$(grep -Eo 'versionName[[:space:]]*[:=]?[[:space:]]*["'"'"'][^"'"'"']+["'"'"']' "$FILE" | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | head -n1 || true)
+              if [ -n "$VERSION" ]; then break; fi
+            fi
+          done
 
-      # 10. versionName＋日付でユニークなタグを生成
+          # Fallback: AndroidManifest.xml
+          if [ -z "$VERSION" ] && [ -f "app/src/main/AndroidManifest.xml" ]; then
+            VERSION=$(grep -oP 'versionName="([^"]+)"' app/src/main/AndroidManifest.xml | sed -E 's/versionName="([^"]+)"/\1/' | head -n1 || true)
+          fi
+
+          # Final fallback: try Gradle task (if project defines one)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(./gradlew -q -PprintVersion=true printVersion 2>/dev/null || true)
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine versionName; defaulting to '0.0.0'"
+            VERSION="0.0.0"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
       - name: Set tag name (version + datetime)
         id: tag
         run: |
           TAG="v${{ steps.version.outputs.version }}-$(date '+%Y%m%d-%H%M')"
           echo "tag_name=$TAG" >> $GITHUB_OUTPUT
 
-      # 11. 既存の同名タグ・リリースがあれば削除（再ビルド対応）
       - name: Delete Release and Tag (dynamic)
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GH_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const tag = '${{ steps.tag.outputs.tag_name }}';
             const releases = await github.rest.repos.listReleases({
@@ -84,6 +141,7 @@ jobs:
             });
             const release = releases.data.find(r => r.tag_name === tag);
             if (release) {
+              core.info(`Deleting existing release id=${release.id} tag=${tag}`);
               await github.rest.repos.deleteRelease({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -96,21 +154,22 @@ jobs:
                 repo: context.repo.repo,
                 ref: `tags/${tag}`,
               });
-            } catch (e) {}
+            } catch (e) {
+              core.info(`No existing tag ${tag} to delete or delete failed: ${e.message}`);
+            }
 
-      # 12. 直近10件のコミットメッセージを取得
       - name: Get last 10 commits
         id: get_commits
         run: |
+          git log -10 --pretty="* %s (%an)" > commit_notes.txt
           echo "notes<<EOF" >> $GITHUB_ENV
-          git log -10 --pretty="* %s (%an)" >> $GITHUB_ENV
+          cat commit_notes.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      # 13. GitHubリリースページを作成（タグ付き、リリースノート付き）
       - name: Create Release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           release_name: Release ${{ steps.tag.outputs.tag_name }}
@@ -118,11 +177,11 @@ jobs:
           draft: false
           prerelease: false
 
-      # 14. リリースにAPKファイルを添付
-      - name: Upload APK to Release
+      - name: Upload APK to Release (if exists)
+        if: ${{ steps.apk_check.outputs.apk_exists == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
-          files: app/build/outputs/apk/release/app-release.apk
+          files: ${{ steps.apk_check.outputs.apk_path }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

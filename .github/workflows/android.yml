@@ -233,129 +233,129 @@ jobs:
           # Start GitHub multiline output
           echo "body<<$DELIM" >> "$GITHUB_OUTPUT"
 
-# Write the markdown body to GITHUB_OUTPUT (variables expand here)
-  cat <<MD >> "$GITHUB_OUTPUT"
-  ## What's Changed
-  ${NOTES}
-  
-  ## Install Guide
-  
-  ### 1) Install an APK via ADB
-  1. Enable *Developer options* and *USB debugging* on your device.
-2. Make sure the device is detected:
-  \`\`\`bash
-  adb devices -l
-  \`\`\`
-3. Install a single APK (universal or ABI-specific):
-    \`\`\`bash
-      adb install -r -g ${APK_EXAMPLE}
-      \`\`\`
-      - \`-r\` reinstalls if the app is already present; \`-g\` grants runtime permissions.
-      - Check device ABI with:
-      \`\`\`bash
-      adb shell getprop ro.product.cpu.abi
-      \`\`\`
-      (e.g., \`arm64-v8a\`).
+          # Write the markdown body to GITHUB_OUTPUT (variables expand here)
+            cat <<MD >> "$GITHUB_OUTPUT"
+            ## What's Changed
+            ${NOTES}
+            
+            ## Install Guide
+            
+            ### 1) Install an APK via ADB
+            1. Enable *Developer options* and *USB debugging* on your device.
+          2. Make sure the device is detected:
+            \`\`\`bash
+            adb devices -l
+            \`\`\`
+          3. Install a single APK (universal or ABI-specific):
+              \`\`\`bash
+                adb install -r -g ${APK_EXAMPLE}
+                \`\`\`
+                - \`-r\` reinstalls if the app is already present; \`-g\` grants runtime permissions.
+                - Check device ABI with:
+                \`\`\`bash
+                adb shell getprop ro.product.cpu.abi
+                \`\`\`
+                (e.g., \`arm64-v8a\`).
+          
+            > **If you see ABI-split APKs**
+            > - \`*-arm64-v8a-release.apk\`: most modern phones (64-bit ARM)
+            > - \`*-x86_64-release.apk\`: emulators / some devices
+            > Prefer a **universal** APK if provided.
+          
+          ### 2) Install from an AAB using bundletool
+          An AAB cannot be installed directly. Use *bundletool* to build and install an \`.apks\` archive:
+            \`\`\`bash
+            # 1) Build a universal APK set
+            java -jar bundletool-all.jar build-apks \
+            --bundle ${AAB_EXAMPLE} \
+            --output app.apks \
+            --mode=universal
+            
+            # 2) Install to a connected device
+            java -jar bundletool-all.jar install-apks --apks app.apks
+            \`\`\`
+          - For ABI/DPI-optimized APKs, use \`--connected-device\` or \`--device-spec\`.
+          
+          ### 3) Troubleshooting
+          - If blocked by the OS, allow installing apps from unknown sources (device Settings).
+          - Remove a conflicting install:
+            \`\`\`bash
+            adb uninstall <your.applicationId>
+            \`\`\`
+          - Inspect install errors:
+            \`\`\`bash
+            adb logcat | grep -i -e package -e install
+            \`\`\`
+          - Ensure the APK matches your device architecture (ABI).
+          
+          ## Assets
+            MD
+            
+            # Append assets list
+            for f in "${APKs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
+            for f in "${AABs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
+            
+            # Close GitHub multiline output
+            echo "$DELIM" >> "$GITHUB_OUTPUT"
 
-  > **If you see ABI-split APKs**
-  > - \`*-arm64-v8a-release.apk\`: most modern phones (64-bit ARM)
-  > - \`*-x86_64-release.apk\`: emulators / some devices
-  > Prefer a **universal** APK if provided.
+      - name: Create or update Release and upload assets
+        if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag = '${{ steps.tag.outputs.tag_name }}';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            
+            function toList(multiline) {
+              return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
+            }
+            const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
+            const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
+            const body = `${{ steps.release_body.outputs.body }}`;
+            
+            core.info(`Target tag: ${tag}`);
+            core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
+            
+            let release;
+            try {
+              const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              release = getRes.data;
+              await github.rest.repos.updateRelease({
+                owner, repo, release_id: release.id, body, name: `Release ${tag}`, draft: false, prerelease: false
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                const createRes = await github.rest.repos.createRelease({
+                  owner, repo, tag_name: tag, name: `Release ${tag}`, body, draft: false, prerelease: false
+                });
+                release = createRes.data;
+              } else {
+                throw e;
+              }
+            }
+            
+            const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
+            const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
+            async function upload(file) {
+              const name = path.basename(file);
+              if (existing.has(name)) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.get(name) });
+              }
+              const data = fs.readFileSync(file);
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name, data,
+                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
+              });
+              core.info(`Uploaded ${name}`);
+            }
+            for (const f of [...apks, ...aabs]) {
+              await upload(f);
+            }
 
-### 2) Install from an AAB using bundletool
-An AAB cannot be installed directly. Use *bundletool* to build and install an \`.apks\` archive:
-  \`\`\`bash
-  # 1) Build a universal APK set
-  java -jar bundletool-all.jar build-apks \
-  --bundle ${AAB_EXAMPLE} \
-  --output app.apks \
-  --mode=universal
-  
-  # 2) Install to a connected device
-  java -jar bundletool-all.jar install-apks --apks app.apks
-  \`\`\`
-- For ABI/DPI-optimized APKs, use \`--connected-device\` or \`--device-spec\`.
-
-### 3) Troubleshooting
-- If blocked by the OS, allow installing apps from unknown sources (device Settings).
-- Remove a conflicting install:
-  \`\`\`bash
-  adb uninstall <your.applicationId>
-  \`\`\`
-- Inspect install errors:
-  \`\`\`bash
-  adb logcat | grep -i -e package -e install
-  \`\`\`
-- Ensure the APK matches your device architecture (ABI).
-
-## Assets
-  MD
-  
-  # Append assets list
-  for f in "${APKs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
-  for f in "${AABs[@]}"; do echo "- $(basename "$f")" >> "$GITHUB_OUTPUT"; done
-  
-  # Close GitHub multiline output
-  echo "$DELIM" >> "$GITHUB_OUTPUT"
-
-- name: Create or update Release and upload assets
-  if: ${{ inputs.create_release && (steps.collect.outputs.apk_count != '0' || steps.collect.outputs.aab_count != '0') }}
-  uses: actions/github-script@v7
-  with:
-    github-token: ${{ secrets.GITHUB_TOKEN }}
-    script: |
-      const fs = require('fs');
-      const path = require('path');
-      const tag = '${{ steps.tag.outputs.tag_name }}';
-      const owner = context.repo.owner;
-      const repo = context.repo.repo;
-      
-      function toList(multiline) {
-        return (multiline || '').split('\n').map(s => s.trim()).filter(Boolean);
-      }
-      const apks = toList(`${{ steps.collect.outputs.apk_list }}`);
-      const aabs = toList(`${{ steps.collect.outputs.aab_list }}`);
-      const body = `${{ steps.release_body.outputs.body }}`;
-      
-      core.info(`Target tag: ${tag}`);
-      core.info(`APKs: ${apks.length}, AABs: ${aabs.length}`);
-      
-      let release;
-      try {
-        const getRes = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-        release = getRes.data;
-        await github.rest.repos.updateRelease({
-          owner, repo, release_id: release.id, body, name: `Release ${tag}`, draft: false, prerelease: false
-        });
-      } catch (e) {
-        if (e.status === 404) {
-          const createRes = await github.rest.repos.createRelease({
-            owner, repo, tag_name: tag, name: `Release ${tag}`, body, draft: false, prerelease: false
-          });
-          release = createRes.data;
-        } else {
-          throw e;
-        }
-      }
-      
-      const assetsRes = await github.rest.repos.listReleaseAssets({ owner, repo, release_id: release.id });
-      const existing = new Map(assetsRes.data.map(a => [a.name, a.id]));
-      async function upload(file) {
-        const name = path.basename(file);
-        if (existing.has(name)) {
-          await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: existing.get(name) });
-        }
-        const data = fs.readFileSync(file);
-        await github.rest.repos.uploadReleaseAsset({
-          owner, repo, release_id: release.id, name, data,
-          headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
-        });
-        core.info(`Uploaded ${name}`);
-      }
-      for (const f of [...apks, ...aabs]) {
-        await upload(f);
-      }
-
-- name: Skip release (no artifacts or disabled)
-  if: ${{ !inputs.create_release || (steps.collect.outputs.apk_count == '0' && steps.collect.outputs.aab_count == '0') }}
-  run: echo "Release step skipped."
+      - name: Skip release (no artifacts or disabled)
+        if: ${{ !inputs.create_release || (steps.collect.outputs.apk_count == '0' && steps.collect.outputs.aab_count == '0') }}
+        run: echo "Release step skipped."

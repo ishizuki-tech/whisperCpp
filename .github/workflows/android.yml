@@ -223,7 +223,6 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const core = require('@actions/core');
 
             const tag = '${{ steps.tag.outputs.tag_name }}';
             const filePath = '${{ steps.apk_check.outputs.apk_path }}';
